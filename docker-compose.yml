@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # 1. Nosso Banco de Dados PostgreSQL
+  db:
+    image: postgres:15
+    container_name: asbuilt_db
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: adminpassword
+      POSTGRES_DB: projetointegrado
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # 2. Nossa API Node.js
+  api:
+    build: .
+    container_name: asbuilt_api
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      # Conecta a API diretamente no container do banco de dados
+      - DATABASE_URL=postgresql://admin:adminpassword@db:5432/projetointegrado?schema=public
+    volumes:
+      # Sincroniza o código da sua máquina com o container em tempo real
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+    depends_on:
+      - db
+
+# Cria um volume persistente para o banco de dados não sumir se o container desligar
+volumes:
+  pgdata:
