@@ -27,7 +27,7 @@ Nosso backend segue a **Arquitetura em Camadas**, um padrão amplamente utilizad
 ✅ **Manutenibilidade** — Código organizado e reutilizável  
 ✅ **Escalabilidade** — Novas funcionalidades sem impacto em código existente  
 
-### Estrutura das 4 Camadas
+### Estrutura das 6 Camadas (Clean Architecture)
 
 ```
 ┌─────────────────────────────────────┐
@@ -35,21 +35,29 @@ Nosso backend segue a **Arquitetura em Camadas**, um padrão amplamente utilizad
 └──────────────────┬──────────────────┘
                    │
 ┌──────────────────▼──────────────────┐
-│   CAMADA 1: Routes (Rotas)          │ ← Define endpoints
+│   CAMADA 1: Routes (Rotas)          │ ← Define endpoints HTTP
 ├─────────────────────────────────────┤
 │   CAMADA 2: Middlewares             │ ← Intercepta requisições
 ├─────────────────────────────────────┤
-│   CAMADA 3: Controllers (Controle)  │ ← Orquestra lógica
+│   CAMADA 3: Controllers (Controle)  │ ← Orquestra a lógica
 ├─────────────────────────────────────┤
 │   CAMADA 4: Services (Serviços)     │ ← Regras de negócio
 ├─────────────────────────────────────┤
-│   CAMADA 5: Data Access (Prisma)    │ ← Banco de dados
+│   CAMADA 5: Repositories            │ ← Abstração de dados
+├─────────────────────────────────────┤
+│   CAMADA 6: Prisma ORM              │ ← Driver do banco
 └──────────────────┬──────────────────┘
                    │
         ┌──────────▼──────────┐
         │   PostgreSQL (DB)   │
         └─────────────────────┘
 ```
+
+**Benefícios dessa nova arquitetura:**
+- 🔄 **Desacoplamento máximo** — Service não conhece Prisma
+- 🧪 **Testabilidade aumentada** — Mock Repository é trivial
+- 🔌 **Portabilidade** — Trocar de banco sem mexer em Service
+- 📐 **Clean Code** — Responsabilidades bem definidas
 
 ---
 
@@ -223,7 +231,7 @@ api:       # Container Node.js
 │   ├── /routes/               # 🛣️ Define endpoints HTTP
 │   │   ├── index.ts           # Aggregador de rotas
 │   │   ├── users.ts           # GET/POST /api/users
-│   │   ├── posts.ts           # GET/POST /api/posts
+│   │   ├── properties.ts      # GET/POST /api/properties
 │   │   └── ...
 │   │
 │   ├── /middlewares/          # 🔀 Interceptadores
@@ -233,15 +241,22 @@ api:       # Container Node.js
 │   │   └── ...
 │   │
 │   ├── /controllers/          # 👮 Orquestra a lógica
-│   │   ├── UserController.ts  # Métodos: createUser, getUser, etc
-│   │   ├── PostController.ts  # Métodos: createPost, getPost, etc
+│   │   ├── UserController.ts  # Métodos: createUser, login, etc
+│   │   ├── PropertyController.ts # Métodos: createProperty, getProperty, etc
 │   │   └── ...
 │   │
 │   ├── /services/             # 💼 Regras de negócio
 │   │   ├── UserService.ts     # Lógica: hash senha, gerar JWT, etc
-│   │   ├── PostService.ts     # Lógica: validar conteúdo, etc
-│   │   ├── ImageService.ts    # Lógica: processar com Sharp
+│   │   ├── PropertyService.ts # Lógica: validar imóvel, entregar, etc
+│   │   ├── AsBuiltService.ts  # Lógica: registros de alteração
 │   │   └── ...
+│   │
+│   ├── /repositories/         # 🗄️ Abstração de dados (NOVO!)
+│   │   ├── BaseRepository.ts  # Classe base com CRUD genérico
+│   │   ├── UserRepository.ts  # Queries de usuário
+│   │   ├── PropertyRepository.ts # Queries de imóvel
+│   │   ├── AsBuiltRepository.ts  # Queries de alterações
+│   │   └── index.ts           # Exportações
 │   │
 │   ├── /utils/                # 🛠️ Funções reutilizáveis
 │   │   ├── validators.ts      # Validação de email, CPF, etc
@@ -370,7 +385,111 @@ Request → Middleware 1 → Middleware 2 → ... → Controller
 
 ---
 
-#### **/controllers** — Orquestra a Lógica
+#### **/repositories** — Abstração de Dados (Data Access Layer)
+
+A camada Repository é essencial para **desacoplar a lógica de negócio do banco de dados**. 
+
+**O que é:** Padrão que encapsula todas as operações de banco em classes especializadas.
+
+**Por quê essa camada é importante:**
+- ✅ Service **não conhece Prisma** — Conhece apenas Repository
+- ✅ Fácil **mockar** em testes unitários
+- ✅ **Trocar de banco** sem modificar Services
+- ✅ Queries centralizadas e reutilizáveis
+- ✅ Reduz duplicação de código
+
+**Exemplos:** `repositories/UserRepository.ts`
+
+```typescript
+import { PrismaClient } from '@prisma/client';
+import { BaseRepository } from './BaseRepository';
+
+export class UserRepository extends BaseRepository<any> {
+  constructor(prismaClient: PrismaClient) {
+    super(prismaClient);
+  }
+
+  getModel() {
+    return this.prisma.user;
+  }
+
+  // Métodos específicos de User
+  async findByEmail(email: string): Promise<any | null> {
+    return this.prisma.user.findUnique({ where: { email } });
+  }
+
+  async findWithProperties(userId: string): Promise<any | null> {
+    return this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { properties: true },
+    });
+  }
+
+  async emailExists(email: string): Promise<boolean> {
+    const user = await this.findByEmail(email);
+    return user !== null;
+  }
+
+  async updateLastLogin(userId: string): Promise<any> {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { lastLogin: new Date() },
+    });
+  }
+}
+```
+
+**BaseRepository:** Classe base que fornece operações CRUD padrão para **todos** os repositories:
+
+```typescript
+export abstract class BaseRepository<T> {
+  async findById(id: string): Promise<T | null> { ... }
+  async findAll(): Promise<T[]> { ... }
+  async create(data: any): Promise<T> { ... }
+  async update(id: string, data: any): Promise<T> { ... }
+  async delete(id: string): Promise<T> { ... }
+  async count(where?: any): Promise<number> { ... }
+}
+```
+
+**Fluxo com Repository:**
+
+```
+Service
+  ↓
+UserRepository.findByEmail(email)  // Service chama Repository
+  ↓
+Prisma.user.findUnique(...)        // Repository usa Prisma
+  ↓
+PostgreSQL                         // Banco de dados
+```
+
+**Quando modificar:** Quando adiciona novas queries específicas de uma entidade
+
+**Como usar em Service:**
+
+```typescript
+export class UserService {
+  constructor(private userRepository: UserRepository) {}
+  
+  async validateUserExists(userId: string): Promise<boolean> {
+    const user = await this.userRepository.findById(userId);
+    return user !== null;
+  }
+  
+  async registerUser(userData) {
+    // Regra de negócio: email deve ser único
+    const exists = await this.userRepository.emailExists(userData.email);
+    if (exists) throw new Error('Email already in use');
+    
+    // Criar novo usuário (ainda delegando para Repository)
+    const user = await this.userRepository.create(userData);
+    return user;
+  }
+}
+```
+
+---
 
 Controller é o "maestro" — recebe a requisição, chama serviços, retorna resposta.
 
@@ -417,60 +536,151 @@ export class UserController {
 
 Service é onde **a lógica real acontece**. O controller apenas orquestra.
 
-**Exemplo:** `services/UserService.ts`
+⚠️ **IMPORTANTE AGORA:** Services **não usam Prisma diretamente**. Usam **Repositories**!
 
+**Exemplo ERRADO (antigo):**
 ```typescript
-import { prisma } from '../config/prisma.config';
-import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
-
+// ❌ Não faça assim!
 export class UserService {
   async createUser(userData) {
-    // Regra 1: Validar email único
-    const existing = await prisma.users.findUnique({
-      where: { email: userData.email }
-    });
-    if (existing) throw new Error('Email already in use');
+    // Service conhecendo Prisma
+    const user = await prisma.users.create({ data: userData });
+    return user;
+  }
+}
+```
+
+**Exemplo CORRETO (novo com Repository):**
+```typescript
+import { UserRepository } from '../repositories/UserRepository';
+import bcrypt from 'bcrypt';
+
+export class UserService {
+  constructor(private userRepository: UserRepository) {}
+  
+  async createUser(userData) {
+    // Regra 1: Email deve ser único
+    const exists = await this.userRepository.emailExists(userData.email);
+    if (exists) throw new Error('Email already in use');
     
-    // Regra 2: Hash da senha
+    // Regra 2: Hash da senha (lógica de negócio)
     const hashedPassword = await bcrypt.hash(userData.password, 10);
     
-    // Regra 3: Criar user no banco
-    const user = await prisma.users.create({
-      data: {
-        email: userData.email,
-        password: hashedPassword,
-        name: userData.name
-      }
+    // Regra 3: Criar no banco via Repository (abstração de dados)
+    const user = await this.userRepository.create({
+      ...userData,
+      password: hashedPassword
     });
     
-    // Regra 4: Gerar JWT
-    const token = jwt.sign(
-      { id: user.id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    // Regra 4: Registrar último login
+    await this.userRepository.updateLastLogin(user.id);
     
-    return { user, token };
+    return user;
   }
   
-  async getUserById(id) {
-    return await prisma.users.findUnique({
-      where: { id },
-      select: { id: true, email: true, name: true } // Não retorna senha
-    });
+  async getUserById(id: string) {
+    return await this.userRepository.findById(id);
   }
 }
 ```
 
 **Responsabilidades:**
 - ✅ Implementar regras de negócio
-- ✅ Interagir com Prisma (banco de dados)
+- ✅ Chamar Repositories (não Prisma!)
 - ✅ Criptografia, géração de tokens, validações complexas
 - ✅ Reutilizável por múltiplos controllers
+- ❌ NÃO usar Prisma diretamente
 - ❌ NÃO responder HTTP diretamente
 
 **Quando modificar:** Toda vez que altera lógica de negócio
+
+---
+
+#### **Fluxo Integrado: Controller → Service → Repository**
+
+Exemplo completo de como as 3 camadas trabalham juntas:
+
+**1️⃣ Controller recebe e delega:**
+```typescript
+// src/controllers/UserController.ts
+export class UserController {
+  constructor(private userService: UserService) {}
+  
+  async register(req, res) {
+    try {
+      const user = await this.userService.createUser(req.body);
+      res.status(201).json({ data: user });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+}
+```
+
+**2️⃣ Service implementa lógica:**
+```typescript
+// src/services/UserService.ts
+export class UserService {
+  constructor(private userRepository: UserRepository) {}
+  
+  async createUser(userData) {
+    // Validação de negócio
+    if (!this.isValidPassword(userData.password)) {
+      throw new Error('Password must be at least 8 characters');
+    }
+    
+    // Verificar existência via Repository
+    const exists = await this.userRepository.emailExists(userData.email);
+    if (exists) throw new Error('Email already registered');
+    
+    // Hashear senha
+    const hashed = await bcrypt.hash(userData.password, 10);
+    
+    // Criar via Repository (abstração de dados)
+    const user = await this.userRepository.create({
+      email: userData.email,
+      password: hashed,
+      name: userData.name,
+      role: 'BUILDER'
+    });
+    
+    return { id: user.id, email: user.email, name: user.name };
+  }
+  
+  private isValidPassword(password: string): boolean {
+    return password.length >= 8;
+  }
+}
+```
+
+**3️⃣ Repository interage com banco:**
+```typescript
+// src/repositories/UserRepository.ts
+export class UserRepository extends BaseRepository<User> {
+  constructor(prismaClient: PrismaClient) {
+    super(prismaClient);
+  }
+  
+  getModel() {
+    return this.prisma.user;
+  }
+  
+  async emailExists(email: string): Promise<boolean> {
+    const user = await this.prisma.user.findUnique({ 
+      where: { email } 
+    });
+    return user !== null;
+  }
+  
+  // Herda de BaseRepository: findById, create, update, delete, etc.
+}
+```
+
+**Resultado:**
+- ✅ Service _não sabe_ que usa PostgreSQL
+- ✅ Service _não conhece_ Prisma
+- ✅ Fácil trocar Repository por mock em testes
+- ✅ Código testável e desacoplado
 
 ---
 
@@ -1008,7 +1218,41 @@ Client recebe: HTTP 401 Unauthorized
 
 ## <a name="boas-práticas--padrões"></a>✨ Boas Práticas & Padrões
 
-### **1. Single Responsibility Principle (SRP)**
+### **1. Repository Pattern** ⭐ NOVO
+
+A camada Repository desacopla Services do ORM (Prisma).
+
+```typescript
+// ❌ ERRADO: Service conhecendo Prisma
+class UserService {
+  async createUser(userData) {
+    // Service exposto a mudanças do Prisma
+    const user = await prisma.users.create({ data: userData });
+    return user;
+  }
+}
+
+// ✅ CORRETO: Service usando Repository
+class UserService {
+  constructor(private userRepository: UserRepository) {}
+  
+  async createUser(userData) {
+    // Service não sabe que Prisma existe!
+    const user = await this.userRepository.create(userData);
+    return user;
+  }
+}
+```
+
+**Por que importa:**
+- 🧪 Testes fáceis — Mock de Repository, não de Prisma
+- 🔄 Trocar banco — De PostgreSQL para MongoDB? Só mude o Repository!
+- 📐 Clean Code — Service não conhece detalhes de persistência
+- ♻️ DRY — Queries centralizadas no Repository
+
+---
+
+### **2. Single Responsibility Principle (SRP)**
 
 ```typescript
 // ❌ ERRADO: Controller fazendo tudo
@@ -1077,7 +1321,76 @@ class UserController {
 
 ---
 
-### **2. DRY (Don't Repeat Yourself)**
+### **2. Single Responsibility Principle (SRP)**
+
+```typescript
+// ❌ ERRADO: Controller fazendo tudo
+class UserController {
+  async createUser(req, res) {
+    // Valida email (responsabilidade 1)
+    const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!regex.test(req.body.email)) {
+      return res.status(400).json({ error: 'Invalid email' });
+    }
+    
+    // Hash de senha (responsabilidade 2)
+    const hashedPassword = await bcrypt.hash(req.body.password, 10);
+    
+    // Vê se email já existe (responsabilidade 3)
+    const existing = await prisma.users.findUnique({
+      where: { email: req.body.email }
+    });
+    if (existing) {
+      return res.status(400).json({ error: 'Email already in use' });
+    }
+    
+    // Cria user (responsabilidade 4)
+    const user = await prisma.users.create({...});
+    
+    // Gera JWT (responsabilidade 5)
+    const token = jwt.sign({...});
+    
+    res.json({ user, token });
+  }
+}
+```
+
+```typescript
+// ✅ CORRETO: Responsabilidades separadas
+
+// Service cuida da lógica
+class UserService {
+  async createUser(userData) {
+    this.validateEmail(userData.email);
+    const hashedPassword = await this.hashPassword(userData.password);
+    const existing = await prisma.users.findUnique({...});
+    if (existing) throw new Error('Email already in use');
+    const user = await prisma.users.create({...});
+    const token = this.generateToken(user);
+    return { user, token };
+  }
+  
+  private validateEmail(email) { /* ... */ }
+  private async hashPassword(password) { /* ... */ }
+  private generateToken(user) { /* ... */ }
+}
+
+// Controller apenas orquestra
+class UserController {
+  async createUser(req, res) {
+    try {
+      const result = await this.userService.createUser(req.body);
+      res.status(201).json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+}
+```
+
+---
+
+### **3. DRY (Don't Repeat Yourself)**
 
 ```typescript
 // ❌ ERRADO: Validação de email em 3 lugares
@@ -1102,7 +1415,7 @@ import { isValidEmail } from '../utils/validators';
 
 ---
 
-### **3. Tratamento de Erros Consistente**
+### **4. Tratamento de Erros Consistente**
 
 ```typescript
 // ❌ ERRADO: Erros sem padronização
@@ -1137,7 +1450,42 @@ app.use((err, req, res, next) => {
 
 ---
 
-### **4. Segurança: Nunca Retornar Senhas**
+### **4. Tratamento de Erros Consistente**
+
+```typescript
+// ❌ ERRADO: Erros sem padronização
+res.json({ error: 'User not found' });        // Sem status
+res.status(404).send('User not found');       // String simples
+res.json({ message: 'User created' });        // Sem status
+res.status(201).json({ data: user });         // Sem mensagem
+
+// ✅ CORRETO: Padrão consistente
+const apiResponse = (success, data, error = null, statusCode = 200) => {
+  return {
+    success,
+    data,
+    error,
+    timestamp: new Date()
+  };
+};
+
+// Sucesso
+res.status(201).json(apiResponse(true, user, null, 201));
+
+// Erro
+res.status(404).json(apiResponse(false, null, 'User not found', 404));
+
+// Middleware de tratamento global
+app.use((err, req, res, next) => {
+  res.status(err.statusCode || 500).json(
+    apiResponse(false, null, err.message)
+  );
+});
+```
+
+---
+
+### **5. Segurança: Nunca Retornar Senhas**
 
 ```typescript
 // ❌ ERRADO
@@ -1161,7 +1509,7 @@ res.json(user);
 
 ---
 
-### **5. Usar Transações para Operações Multi-Passo**
+### **6. Usar Transações para Operações Multi-Passo**
 
 ```typescript
 // ❌ ERRADO: Risco de inconsistência
